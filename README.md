@@ -82,6 +82,9 @@ end-to-end Streamlit run that admits a patient.
   is now saved and reused.
 - Metrics are computed on the test set at training time instead of hard-coded.
 - Department capacity check, free-bed indicator, discharge and CSV export.
+- Dashboard date moved to 17 Feb 2023 (inside the data range) so the bed map,
+  KPIs and charts show real patients; it used to be 10 Mar 2026, after the
+  data ends, which left the hospital empty.
 - Admission date defaults to the dashboard date; new patient IDs never collide.
 - Data files resolve relative to the script, so the app runs from any folder.
 - Added `los_model.py`, pytest suite and this README.

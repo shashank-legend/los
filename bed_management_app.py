@@ -97,7 +97,9 @@ MODELS  = bundle['models']
 
 # ── CONSTANTS ─────────────────────────────────────────────────
 TOTAL_BEDS = 200
-TODAY      = pd.Timestamp('2026-03-10')
+# "Today" for the dashboard. The synthetic data covers Jan 2022 – Jan 2024,
+# so the dashboard is pinned to a busy day inside that range.
+TODAY      = pd.Timestamp('2023-02-17')
 
 DEPT_BEDS = {
     'General Surgery':20,'Cardiology':18,'Orthopedic Surgery':16,
@@ -305,7 +307,7 @@ elif predict_btn:
 # ═════════════════════════════════════════════════════════════
 
 # Header
-st.markdown("""
+st.markdown(f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
             background:#0d1623;border:1px solid #1a2e45;border-radius:14px;
             padding:18px 24px;margin-bottom:20px;">
@@ -318,7 +320,7 @@ st.markdown("""
   </div>
   <div style="display:flex;gap:12px;align-items:center;">
     <div style="background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.3);border-radius:20px;padding:6px 14px;font-size:11px;color:#00e5a0">● LIVE</div>
-    <div style="font-size:12px;color:#4a6080;font-family:monospace">10 MAR 2026</div>
+    <div style="font-size:12px;color:#4a6080;font-family:monospace">{TODAY.strftime('%d %b %Y').upper()}</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -480,7 +482,8 @@ st.markdown('<div class="sec">Analytics & Trends</div>', unsafe_allow_html=True)
 g1, g2, g3 = st.columns(3)
 
 with g1:
-    trend = occ_df.tail(14).copy()
+    occ_dates = pd.to_datetime(occ_df['date'])
+    trend = occ_df[(occ_dates > TODAY - timedelta(days=14)) & (occ_dates <= TODAY)].copy()
     fig = go.Figure(go.Bar(
         x=trend['date'], y=trend['patients_in_hospital'],
         marker=dict(color=trend['patients_in_hospital'],
