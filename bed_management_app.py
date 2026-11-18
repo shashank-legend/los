@@ -18,13 +18,19 @@ Put these files in the SAME folder before running:
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import warnings
 import json
 import os
+from los_model import load_bundle, predict_los as _predict_los, los_category
 warnings.filterwarnings('ignore')
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _path(name):
+    """Resolve data files next to this script, whatever the working dir."""
+    return os.path.join(SCRIPT_DIR, name)
 
 # ── PAGE CONFIG ───────────────────────────────────────────────
 st.set_page_config(
@@ -71,27 +77,23 @@ st.markdown("""
 # ── LOAD DATA & MODELS ────────────────────────────────────────
 @st.cache_resource
 def load_models():
-    with open('model_bundle.pkl','rb') as f:
-        return pickle.load(f)
+    return load_bundle(_path('model_bundle.pkl'))
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv('synthetic_hospital_data.csv')
+    df = pd.read_csv(_path('synthetic_hospital_data.csv'))
     df['admission_date'] = pd.to_datetime(df['admission_date'])
     df['discharge_date'] = pd.to_datetime(df['discharge_date'])
     return df
 
 @st.cache_data
 def load_occ():
-    return pd.read_csv('hospital_occupancy_timeseries.csv')
+    return pd.read_csv(_path('hospital_occupancy_timeseries.csv'))
 
 bundle  = load_models()
 df      = load_data()
 occ_df  = load_occ()
 MODELS  = bundle['models']
-FEATS   = bundle['feature_cols']
-CCOLS   = bundle['continuous_cols']
-SCALER  = bundle['scaler']
 
 # ── CONSTANTS ─────────────────────────────────────────────────
 TOTAL_BEDS = 200
@@ -121,19 +123,20 @@ DIAGNOSES = [
     'Trauma/Injury','Mental Health','Other'
 ]
 
-MODEL_METRICS = {
+_FALLBACK_METRICS = {
     'Linear Regression':  {'MAE':1.518,'RMSE':1.905,'R²':0.460,'MAPE':'27.4%'},
     'Ridge Regression':   {'MAE':1.518,'RMSE':1.905,'R²':0.460,'MAPE':'27.4%'},
     'Decision Tree':      {'MAE':1.729,'RMSE':2.136,'R²':0.321,'MAPE':'30.6%'},
     'Random Forest':      {'MAE':1.599,'RMSE':1.992,'R²':0.410,'MAPE':'29.3%'},
     'Gradient Boosting':  {'MAE':1.560,'RMSE':1.958,'R²':0.430,'MAPE':'28.2%'},
 }
+# Metrics computed on the held-out test set by save_models.py
+MODEL_METRICS = bundle.get('metrics') or _FALLBACK_METRICS
 
 # ── PERSISTENT STORAGE ────────────────────────────────────────
 # Patients are saved to patients_db.json in the same folder as
 # this script so data survives app restarts.
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 PATIENTS_DB = os.path.join(SCRIPT_DIR, 'patients_db.json')
 
 def _save_patients(patients: list):
@@ -154,8 +157,12 @@ def _load_patients() -> list:
     """Load patient list from JSON; convert date strings back to Timestamps."""
     if not os.path.exists(PATIENTS_DB):
         return []
-    with open(PATIENTS_DB, 'r') as f:
-        raw = json.load(f)
+    try:
+        with open(PATIENTS_DB, 'r') as f:
+            raw = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        st.warning("patients_db.json could not be read — starting with an empty list.")
+        return []
     patients = []
     for row in raw:
         for date_col in ('admission_date', 'discharge_date'):
@@ -183,48 +190,17 @@ def bed_status(p):
     if p['surgery_performed'] == 1:    return 'surgery'
     return 'occupied'
 
-def los_cat(d):
-    if d<=3: return 'Short (1-3d)'
-    elif d<=7: return 'Medium (4-7d)'
-    elif d<=14: return 'Long (8-14d)'
-    else: return 'Very Long (>14d)'
+los_cat = los_category
 
 def predict_los(inp, model_name):
-    row = {c:0 for c in FEATS}
-    row['age']                        = inp['age']
-    row['gender']                     = 1 if inp['gender']=='Female' else 0
-    row['admission_type']             = 1 if inp['admission_type']=='Emergency' else 0
-    row['severity_of_illness']        = inp['severity']
-    row['has_comorbidity']            = inp['comorbidity']
-    row['charlson_comorbidity_index'] = inp['charlson']
-    row['has_infection']              = inp['infection']
-    row['surgery_performed']          = inp['surgery']
-    row['surgery_duration_mins']      = inp['surg_dur']
-    row['num_procedures']             = inp['n_proc']
-    row['num_medications']            = inp['n_meds']
-    row['weight_loss']                = inp['wt_loss']
-    row['dietary_pattern_change']     = inp['diet']
-    row['functional_capacity_change'] = inp['func']
-    row['malnutrition']               = inp['malnut']
-    row['bmi']                        = inp['bmi']
-    row['systolic_bp']                = inp['sbp']
-    row['diastolic_bp']               = inp['dbp']
-    row['body_temperature']           = inp['temp']
-    row['blood_glucose']              = inp['glucose']
-    row['previous_admissions']        = inp['prev_adm']
-    row['outpatient_visits_30d']      = inp['op_visits']
-    row['admission_month']            = inp['adm_date'].month
-    row['admission_year']             = inp['adm_date'].year
-    row['weekend_admission']          = 1 if inp['adm_date'].weekday()>=5 else 0
-    row['hour_of_admission']          = inp['hour']
-    row['insurance_type']             = {'Uninsured':0,'Government':1,'Private':2}[inp['insurance']]
-    row['socioeconomic_status']       = {'Low':0,'Middle':1,'High':2}[inp['ses']]
-    row['marital_status']             = {'Single':0,'Married':1,'Divorced':2,'Widowed':3}[inp['marital']]
+    return _predict_los(inp, model_name, bundle)
 
-    X = pd.DataFrame([row])[FEATS]
-    X[CCOLS] = SCALER.transform(X[CCOLS])
-    pred = MODELS[model_name].predict(X)[0]
-    return int(np.clip(round(pred), 1, 30))
+def dept_occupancy(dept):
+    """Beds currently in use in a department (dataset + ML-admitted)."""
+    cur = get_current()
+    n = int((cur['department'] == dept).sum())
+    n += sum(1 for p in st.session_state.pred_patients if p['department'] == dept)
+    return n
 
 
 # ═════════════════════════════════════════════════════════════
@@ -250,8 +226,10 @@ with st.sidebar:
 
     with st.expander("🏨 Admission", expanded=True):
         dept     = st.selectbox("Department", list(DEPT_BEDS.keys()))
+        _free    = DEPT_BEDS[dept] - dept_occupancy(dept)
+        st.caption(f"🛏️ {_free} of {DEPT_BEDS[dept]} beds free in {dept}")
         adm_type = st.selectbox("Admission Type", ["Elective","Emergency"])
-        adm_date = st.date_input("Admission Date", datetime(2024,1,1))
+        adm_date = st.date_input("Admission Date", TODAY.date())
         hour     = st.selectbox("Hour", [0,1,2,3], format_func=lambda x:["09-12","12-15","15-18","18-21"][x])
 
     with st.expander("🩺 Clinical", expanded=True):
@@ -288,7 +266,10 @@ with st.sidebar:
 # PREDICTION
 # ═════════════════════════════════════════════════════════════
 new_pred = None
-if predict_btn:
+if predict_btn and dept_occupancy(dept) >= DEPT_BEDS[dept]:
+    st.error(f"🚫 {dept} is full ({DEPT_BEDS[dept]}/{DEPT_BEDS[dept]} beds). "
+             "Pick another department or discharge a patient first.")
+elif predict_btn:
     inp = {
         'age':age,'gender':gender,'marital':marital,'ses':ses,'insurance':ins,
         'admission_type':adm_type,'adm_date':adm_date,'hour':hour,
@@ -305,7 +286,7 @@ if predict_btn:
     pstatus = 'critical' if severity==3 else 'infected' if infection else 'surgery' if surgery else 'occupied'
 
     new_pred = {
-        'patient_id': f"NEW-{len(st.session_state.pred_patients)+1:03d}",
+        'patient_id': f"NEW-{max([int(p['patient_id'].split('-')[1]) for p in st.session_state.pred_patients] or [0])+1:03d}",
         'age':age,'gender':gender,'department':dept,
         'admission_date':pd.Timestamp(adm_date),
         'discharge_date':disc_date,
@@ -572,7 +553,18 @@ if st.session_state.pred_patients:
     ]]
     tdf.columns = ['Patient','Age','Gender','Department','Admitted','Discharges','LOS (days)','Category','Model']
     st.dataframe(tdf, use_container_width=True, hide_index=True)
-    if st.button("🗑️ Clear Predicted Patients"):
+    b1, b2, b3 = st.columns([1, 1, 2])
+    b1.download_button("⬇️ Export CSV", tdf.to_csv(index=False).encode(),
+                       file_name="ml_admitted_patients.csv", mime="text/csv",
+                       use_container_width=True)
+    with b2.popover("🚪 Discharge", use_container_width=True):
+        pid = st.selectbox("Patient", [p['patient_id'] for p in st.session_state.pred_patients])
+        if st.button("Confirm discharge"):
+            st.session_state.pred_patients = [
+                p for p in st.session_state.pred_patients if p['patient_id'] != pid]
+            _save_patients(st.session_state.pred_patients)
+            st.rerun()
+    if b3.button("🗑️ Clear Predicted Patients"):
         st.session_state.pred_patients = []
         _save_patients([])   # wipe the file too
         st.rerun()

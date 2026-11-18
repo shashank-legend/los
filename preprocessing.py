@@ -315,6 +315,16 @@ df_full_preprocessed.to_csv(base + 'preprocessed_full.csv', index=False)
 # Save feature importance scores
 feature_scores.to_csv(base + 'feature_scores.csv', index=False)
 
+# Save the scaler fitted on RAW values so the app can transform
+# new (raw) patient inputs exactly the way the training data was.
+import pickle
+with open(base + 'scaler.pkl', 'wb') as f:
+    pickle.dump({
+        'scaler':     scaler,
+        'scale_cols': scale_cols,
+        'raw_means':  df_clean[scale_cols].mean().to_dict(),
+    }, f)
+
 print(f"\n  ✅ X_train.csv          → {X_train.shape}")
 print(f"  ✅ X_test.csv           → {X_test.shape}")
 print(f"  ✅ y_train.csv          → {y_train.shape}")

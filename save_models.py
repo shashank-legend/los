@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.linear_model    import LinearRegression, Ridge
 from sklearn.tree            import DecisionTreeRegressor
 from sklearn.ensemble        import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing   import StandardScaler
+from sklearn.metrics         import mean_absolute_error, mean_squared_error, r2_score
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 base       = SCRIPT_DIR + os.sep
@@ -25,14 +25,16 @@ y_test  = pd.read_csv(base + 'y_test.csv').squeeze()
 
 print(f"\n✅ Data loaded: {X_train.shape[0]} train, {X_test.shape[0]} test samples")
 
-# ── Identify continuous cols for scaling ─────────────
-binary_cols = [c for c in X_train.columns if X_train[c].nunique() == 2]
-continuous_cols = [c for c in X_train.select_dtypes(include=[np.number]).columns
-                   if c not in binary_cols]
-
-# ── Fit scaler on training data ──────────────────────
-scaler = StandardScaler()
-scaler.fit(X_train[continuous_cols])
+# ── Load the scaler fitted on RAW data in preprocessing.py ──
+# X_train is already scaled, so fitting a new scaler here would be wrong:
+# the app needs to transform raw form inputs the same way training data was.
+scaler_path = base + 'scaler.pkl'
+if not os.path.exists(scaler_path):
+    raise SystemExit("scaler.pkl not found — run `python preprocessing.py` first.")
+with open(scaler_path, 'rb') as f:
+    sc = pickle.load(f)
+scaler, scale_cols = sc['scaler'], sc['scale_cols']
+continuous_cols = [c for c in X_train.columns if c in scale_cols]
 
 # ── Train all 5 models ───────────────────────────────
 models_def = {
@@ -50,12 +52,27 @@ for name, model in models_def.items():
     trained[name] = model
     print(f"  ✅ {name}")
 
+# ── Evaluate on the held-out test set ────────────────
+metrics = {}
+print("\nTest-set performance:")
+for name, model in trained.items():
+    pred = model.predict(X_test)
+    mae  = mean_absolute_error(y_test, pred)
+    rmse = float(np.sqrt(mean_squared_error(y_test, pred)))
+    r2   = r2_score(y_test, pred)
+    mape = float(np.mean(np.abs((y_test - pred) / y_test.clip(lower=1))) * 100)
+    metrics[name] = {'MAE': round(mae, 3), 'RMSE': round(rmse, 3),
+                     'R²': round(r2, 3), 'MAPE': f"{mape:.1f}%"}
+    print(f"  {name:<18} MAE={mae:.3f}  RMSE={rmse:.3f}  R²={r2:.3f}  MAPE={mape:.1f}%")
+
 # ── Save bundle — keys match bed_management_app.py ──
 bundle = {
     'models':          trained,
     'feature_cols':    list(X_train.columns),
     'continuous_cols': continuous_cols,
-    'scaler':          scaler,
+    'scaler':          scaler,          # fitted on RAW values
+    'scale_cols':      scale_cols,      # columns the scaler expects
+    'metrics':         metrics,         # held-out test metrics
     'feature_means':   X_train.mean().to_dict(),
     'feature_stds':    X_train.std().to_dict(),
 }
